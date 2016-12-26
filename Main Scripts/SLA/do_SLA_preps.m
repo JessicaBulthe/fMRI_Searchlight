@@ -1,0 +1,157 @@
+%% Do preparations for the SLA 
+% In this script the following things are done:
+% o	Check if the directories are all ending with a file separator. 
+% o	The scriptdir is added to the pathway of matlab
+% o	Make the resultsdir if it does not exist yet
+% o	Load in default parameters for the SLA and set the type of analyses ‘correlational’ or ‘decoding’
+% o	Select which pairwise comparisons you want to run during the SLA
+% o	Get subject ID’s 
+
+% Author: JB - January 2015 
+
+function [dirs, cfg, labelnames, SubjectIDs] = do_SLA_preps(dirs, SLAvars)
+
+%% Check if directories are ending with a filesep ("\" or "/"), if not, add a filesep
+if strcmp(dirs.ScriptDir(end), filesep) ~= 1
+    dirs.ScriptDir(end+1) = filesep; 
+end
+
+if strcmp(dirs.DataDir(end), filesep) ~= 1
+    dirs.DataDir(end+1) = filesep; 
+end
+
+if strcmp(dirs.ResultDir(end), filesep) ~= 1
+    dirs.ResultDir(end+1) = filesep; 
+end
+
+%% Add ScriptDir to the searchpath of Matlab 
+addpath(genpath(dirs.ScriptDir));
+
+%% Make the resultdir if it does not exist yet
+if exist(dirs.ResultDir, 'dir') ~=7 
+    mkdir(dirs.ResultDir);
+end
+
+%% Load in default parameters of TDT 
+% run the script decoding_defaults of TDT
+cfg = decoding_defaults;
+
+% change to type of analyses
+if strcmp(SLAvars.Analysis, 'decoding')
+    cfg.decoding.software = 'libsvm';
+    cfg.results.output = 'accuracy';
+else
+    cfg.decoding.software = 'correlation_classifier';
+    cfg.decoding.method = 'classification'; 
+    cfg.results.output = 'corr';
+end
+
+% Searchlight-specific parameters
+cfg.searchlight.unit = SLAvars.Radius_Unit; 
+cfg.searchlight.radius = SLAvars.Radius_Size; 
+
+% The verbose level allows you to determine how much output you want to see
+% on the console while the program is running (0: no output, 1: normal 
+% output [default], 2: high output).
+cfg.verbose = 1;
+
+%% Get SubjectIDs
+% Select subjects for which you want to do the SLA
+subjects = dir(dirs.DataDir);
+subjects = {subjects.name};
+[selected,~] = listdlg('PromptString', 'Select the subjects on which you want to do SLA: ', 'SelectionMode', 'multiple', 'ListString', subjects); 
+
+% Make the variable
+SubjectIDs = cellstr(subjects(selected)); 
+
+%% Select the pairwise comparisons 
+% Select the contrast you wish to do the SLA on. 
+all_content = dir([dirs.DataDir SubjectIDs{1} filesep]);
+dirFlags = [all_content.isdir];
+subFolders = all_content(dirFlags);
+
+if size(subFolders,1) > 3
+    models = {subFolders(3:end).name};
+    [c,~] = listdlg('PromptString', 'Select the model: ', 'SelectionMode', 'single', 'ListString', models); 
+    dirs.selected_model = [char(models(c)) filesep];
+elseif size(subFolders,1) == 3
+    model = {subFolders(3).name};
+    dirs.selected_model = [char(model) filesep];
+else
+    dirs.selected_model = [];
+end
+
+% Get an example folder
+example_folder = [dirs.DataDir SubjectIDs{1} filesep dirs.selected_model filesep];
+
+% Get the condition names
+[~, ~, conditionnames] = display_regressor_names(example_folder, 1);
+conditionnames(end-6:end,:) = [];
+
+% Get the pairwise comparisons
+dirs.YourSLA = [dirs.ScriptDir 'For your SLA' filesep];
+if exist([dirs.YourSLA 'Pairwise Comparisons'], 'dir')
+    existing_labels = questdlg('Do you want to load a previous made pairwise comparisons?', 'Pairwise Comparisons', 'yes','no','yes');    
+else
+    existing_labels = 'no';
+end
+
+if strcmp(existing_labels, 'yes')
+    curr_dir = cd;
+    cd([dirs.YourSLA 'Pairwise Comparisons' filesep]);
+    labelfile = uigetfile('*mat', 'Select the file containing the pairwise comparisons:');
+    load(labelfile);
+    cd(curr_dir);
+else
+    all_or_not = questdlg('To automatically make all pairwise comparisons for certain conditions?', 'Pairwise Comparisons', 'yes','no','yes');    
+    
+    labelnames = {};
+
+    if strcmp(all_or_not, 'yes')
+        [select,~] = listdlg('PromptString', 'Select first condition: ', 'SelectionMode', 'multiple', 'ListString', conditionnames); 
+        selected_conditions = conditionnames(select,:); 
+        
+        if strcmp(SLAvars.Analysis, 'decoding')
+            comp = 1;
+            for c1 = 1:size(selected_conditions,1)-1
+                for c2 = c1+1:size(selected_conditions,1)
+                    labelnames{comp} = [cellstr(selected_conditions(c1,:)) cellstr(selected_conditions(c2,:))];
+                    comp = comp+1;
+                end
+            end
+        else
+            comp = 1;
+            for c1 = 1:size(selected_conditions,1)
+                for c2 = c1:size(selected_conditions,1)
+                    labelnames{comp} = [cellstr(selected_conditions(c1,:)) cellstr(selected_conditions(c2,:))];
+                    comp = comp+1;
+                end
+            end
+        end
+        
+    else
+        % make the pairwise comparisons
+        add_comparison = 'yes'; 
+        while strcmp(add_comparison, 'yes')    
+            % select pairwise comparisons
+            [selection1,~] = listdlg('PromptString', 'Select first condition: ', 'SelectionMode', 'single', 'ListString', conditionnames); 
+            [selection2,~] = listdlg('PromptString', 'Select second condition: ', 'SelectionMode', 'single', 'ListString', conditionnames); 
+
+            % add to labelnames
+            labelnames{end+1} = [cellstr(conditionnames(selection1,:)) cellstr(conditionnames(selection2,:))];
+
+            % ask whether you want to add another pairwise comparison
+            add_comparison = questdlg('Would you like to add another pairwise comparison?', 'Pairwise Comparisons', 'yes','no','yes');    
+        end
+    end
+
+    % save them
+    mkdir([dirs.YourSLA 'Pairwise Comparisons' filesep]);
+    
+    [labelsfile, ~] = save_file([dirs.YourSLA 'Pairwise Comparisons' filesep], 'Give a name to this pairwise comparison', '.mat');
+    save(labelsfile, 'labelnames');
+end
+    
+    
+
+
